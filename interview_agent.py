@@ -3,7 +3,7 @@ import logging
 import os
 from datetime import datetime
 
-from llm.groq_client import llm
+from llm.groq_client import ask_llm
 from memory.cognee_memory import CogneeMemory
 
 
