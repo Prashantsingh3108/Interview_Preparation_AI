@@ -9,8 +9,8 @@ from pydantic import BaseModel
 from typing import List, Optional
 
 # Core imports from your project architecture
-from llm.groq_client import ask_llm
-from memory.cognee_memory import CogneeMemory
+from groq_client import ask_llm
+from cognee_memory import CogneeMemory
 
 # Configure production-ready logging
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
