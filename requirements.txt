@@ -1,6 +1,6 @@
 streamlit>=1.37.0
 groq>=0.29.0
 python-dotenv>=1.0.1
-cognee>=1.6.0
+cognee==1.2.2
 pandas>=2.2.2
 pypdf>=5.1.0
