@@ -1,189 +1,185 @@
-import json
-import logging
-import os
-import re
 import asyncio
-from datetime import datetime
-from fastapi import FastAPI, HTTPException, BackgroundTasks
-from pydantic import BaseModel
-from typing import List, Optional
+import streamlit as st
 
-# Core imports from your project architecture
-from groq_client import ask_llm
-from cognee_memory import CogneeMemory
+from interview_agent import InterviewAgent
 
-# Configure production-ready logging
-logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
-
-app = FastAPI(
-    title="AI Interview Agent API",
-    version="1.0.0",
-    description="An intelligent async technical interview agent powered by Groq and Cognee."
+st.set_page_config(
+    page_title="AI Interview Preparation",
+    page_icon="🎯",
+    layout="wide"
 )
 
-class InterviewAgent:
-    def __init__(self, resume_text: str, memory_file: str = "memory.json"):
-        self.resume = resume_text
-        self.memory_file = memory_file
-        self.cognee = CogneeMemory()
-        self.cognee_initialized = False
-        self.memory = self._load_memory()
+st.title("🎯 AI Interview Preparation System")
+st.write("Practice technical interviews powered by Groq + Cognee")
 
-    def _load_memory(self):
-        if os.path.exists(self.memory_file):
-            try:
-                with open(self.memory_file, "r") as f:
-                    return json.load(f)
-            except Exception as e:
-                logging.error(f"Failed to load memory file: {e}")
-        return {"history": [], "scores": {}, "weak_topics": {}}
+# -----------------------------
+# Session State
+# -----------------------------
 
-    async def _init_cognee(self):
-        if not self.cognee_initialized:
-            try:
-                await self.cognee.initialize()
-                self.cognee_initialized = True
-                logging.info("Cognee Cloud Connected Successfully.")
-            except Exception as e:
-                logging.error(f"Cognee Initialization Failed: {e}")
+if "agent" not in st.session_state:
+    st.session_state.agent = None
 
-    def _parse_json_response(self, response: str, fallback: dict) -> dict:
-        try:
-            match = re.search(r"```json\s*(.*?)\s*```", response, re.DOTALL)
-            clean_res = match.group(1).strip() if match else response.strip()
-            return json.loads(clean_res)
-        except Exception:
-            logging.warning("Invalid JSON returned by LLM. Returning fallback structure.")
-            return fallback
+if "question" not in st.session_state:
+    st.session_state.question = None
 
-    def save_memory(self):
-        try:
-            with open(self.memory_file, "w") as f:
-                json.dump(self.memory, f, indent=4)
-        except Exception as e:
-            logging.error(f"Failed to write to memory file: {e}")
-
-    def get_weak_topics(self):
-        return [t for t, score in self.memory["weak_topics"].items() if score < 7]
-
-    async def generate_question(self) -> dict:
-        await self._init_cognee()
-        try:
-            context = await self.cognee.get_context_for_next_question()
-        except Exception as e:
-            logging.error(f"Error fetching Cognee context: {e}")
-            context = "No previous interview context."
-
-        weak_topics = self.get_weak_topics()
-        focus = ", ".join(weak_topics) if weak_topics else "Python, SQL, Machine Learning"
-
-        prompt = f"""You are a Senior Software Engineer interviewing a candidate.
-Candidate Resume:\n{self.resume}\n
-Previous Interview Memory:\n{context}\n
-Weak Topics:\n{focus}\n
-Instructions:
-1. Ask exactly ONE question focusing on weak topics.
-2. Never repeat previous questions.
-3. Adjust difficulty dynamically (Increase if score > 8, Decrease if score < 5).
-4. Return ONLY JSON matching this format: {{"topic":"Python", "difficulty":"Medium", "question":"..."}}"""
-
-        # Run synchronous ask_llm in a worker thread to keep FastAPI fully non-blocking
-        res = await asyncio.to_thread(ask_llm, prompt)
-        return self._parse_json_response(res, {"topic": "General", "difficulty": "Medium", "question": res})
-
-    async def evaluate_answer(self, topic: str, question: str, answer: str) -> dict:
-        prompt = f"""You are an experienced technical interviewer.
-Question:\n{question}\nCandidate Answer:\n{answer}\n
-Evaluate the answer out of 10. Return ONLY JSON matching this format:
-{{"score": 8, "feedback": "...", "mistakes": [], "ideal_answer": "..."}}"""
-
-        res = await asyncio.to_thread(ask_llm, prompt)
-        return self._parse_json_response(res, {"score": 5, "feedback": res, "mistakes": [], "ideal_answer": ""})
-
-    async def update_memory(self, topic: str, question: str, answer: str, result: dict):
-        record = {"time": str(datetime.now()), "topic": topic, "question": question, "answer": answer, **result}
-        self.memory["history"].append(record)
-        
-        scores = self.memory["scores"].setdefault(topic, [])
-        scores.append(result["score"])
-        
-        self.memory["weak_topics"][topic] = sum(scores) / len(scores)
-        self.save_memory()
-
-        await self._init_cognee()
-        if self.cognee_initialized:
-            try:
-                await self.cognee.add_interview_record(topic, question, answer, result["score"], result["feedback"], result["mistakes"])
-                logging.info("Interview record synchronized to Cognee.")
-            except Exception as e:
-                logging.error(f"Cognee Sync Error: {e}")
-
-    def get_report_data(self) -> dict:
-        if not self.memory["scores"]:
-            return {"status": "No Interview History"}
-        
-        breakdown = {topic: round(sum(scores)/len(scores), 2) for topic, scores in self.memory["scores"].items()}
-        return {
-            "performance": breakdown,
-            "weak_topics": self.get_weak_topics()
-        }
+if "result" not in st.session_state:
+    st.session_state.result = None
 
 
-# --- FASTAPI REQUEST/RESPONSE SCHEMAS ---
+# -----------------------------
+# Resume Input
+# -----------------------------
 
-class InitializationPayload(BaseModel):
-    resume: str
+resume = st.text_area(
+    "Paste Your Resume",
+    height=300
+)
 
-class AnswerPayload(BaseModel):
-    topic: str
-    question: str
-    answer: str
+if st.button("Start Interview"):
 
+    if resume.strip() == "":
+        st.warning("Please paste your resume.")
+        st.stop()
 
-# --- GLOBAL AGENT STATE MANAGEMENT ---
-# Note: For production with multiple users, replace this global instantiation 
-# with a database lookup or key-value cache (like Redis) keyed on a user ID token.
-agent_instance: Optional[InterviewAgent] = None
+    st.session_state.agent = InterviewAgent(resume)
 
+    with st.spinner("Generating Interview Question..."):
 
-@app.post("/interview/start", summary="Initialize or reset the interview with a resume")
-async def start_interview(payload: InitializationPayload):
-    global agent_instance
-    agent_instance = InterviewAgent(resume_text=payload.resume)
-    return {"message": "Interview session initialized successfully."}
-
-
-@app.get("/interview/next-question", summary="Generate the next context-aware question")
-async def get_next_question():
-    if not agent_instance:
-        raise HTTPException(status_code=400, detail="No active interview session. Call /interview/start first.")
-    try:
-        question_data = await agent_instance.generate_question()
-        return question_data
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to generate question: {str(e)}")
-
-
-@app.post("/interview/submit-answer", summary="Submit a candidate's answer for evaluation")
-async def submit_answer(payload: AnswerPayload, background_tasks: BackgroundTasks):
-    if not agent_instance:
-        raise HTTPException(status_code=400, detail="No active interview session.")
-    try:
-        # Evaluate user answer asynchronously
-        evaluation = await agent_instance.evaluate_answer(payload.topic, payload.question, payload.answer)
-        
-        # Save evaluation to local/cloud storage via Background Tasks so the candidate gets an instant response
-        background_tasks.add_task(
-            agent_instance.update_memory, 
-            payload.topic, payload.question, payload.answer, evaluation
+        st.session_state.question = asyncio.run(
+            st.session_state.agent.generate_question()
         )
-        return evaluation
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Evaluation pipeline failed: {str(e)}")
+
+    st.success("Question Generated")
 
 
-@app.get("/interview/report", summary="Retrieve a full summary of candidate performance")
-async def get_report():
-    if not agent_instance:
-        raise HTTPException(status_code=400, detail="No active interview session.")
-    return agent_instance.get_report_data()
+# -----------------------------
+# Display Question
+# -----------------------------
+
+if st.session_state.question:
+
+    q = st.session_state.question
+
+    st.subheader("Interview Question")
+
+    st.write(f"**Topic:** {q['topic']}")
+    st.write(f"**Difficulty:** {q['difficulty']}")
+
+    st.info(q["question"])
+
+    answer = st.text_area(
+        "Your Answer",
+        height=220
+    )
+
+    if st.button("Submit Answer"):
+
+        if answer.strip() == "":
+            st.warning("Please write your answer.")
+            st.stop()
+
+        with st.spinner("Evaluating..."):
+
+            result = asyncio.run(
+
+                st.session_state.agent.evaluate_answer(
+
+                    q["topic"],
+                    q["question"],
+                    answer
+
+                )
+
+            )
+
+            asyncio.run(
+
+                st.session_state.agent.update_memory(
+
+                    q["topic"],
+                    q["question"],
+                    answer,
+                    result
+
+                )
+
+            )
+
+        st.session_state.result = result
+
+
+# -----------------------------
+# Result
+# -----------------------------
+
+if st.session_state.result:
+
+    r = st.session_state.result
+
+    st.header("Evaluation")
+
+    st.metric(
+        "Score",
+        f"{r['score']}/10"
+    )
+
+    st.success(r["feedback"])
+
+    st.subheader("Mistakes")
+
+    if len(r["mistakes"]) == 0:
+
+        st.write("No major mistakes.")
+
+    else:
+
+        for m in r["mistakes"]:
+
+            st.write("•", m)
+
+    st.subheader("Ideal Answer")
+
+    st.write(r["ideal_answer"])
+
+
+# -----------------------------
+# Report
+# -----------------------------
+
+if st.session_state.agent:
+
+    if st.button("Show Performance Report"):
+
+        memory = st.session_state.agent.memory
+
+        st.header("Performance Report")
+
+        if len(memory["scores"]) == 0:
+
+            st.info("No interview history.")
+
+        else:
+
+            for topic, scores in memory["scores"].items():
+
+                avg = sum(scores) / len(scores)
+
+                st.progress(avg / 10)
+
+                st.write(
+                    f"**{topic} : {avg:.2f}/10**"
+                )
+
+            st.subheader("Weak Topics")
+
+            weak = st.session_state.agent.get_weak_topics()
+
+            if weak:
+
+                for t in weak:
+
+                    st.error(t)
+
+            else:
+
+                st.success("No Weak Topics 🎉")
